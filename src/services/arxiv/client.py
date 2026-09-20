@@ -5,7 +5,6 @@ import xml.etree.ElementTree as ET
 from functools import cached_property
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import quote, urlencode
 
 import httpx
 from src.config import ArxivSettings
@@ -17,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 class ArxivClient:
     """Client for fetching papers from arXiv API."""
+
+    REQUEST_HEADERS = {
+        "User-Agent": "arxiv-paper-curator/0.1 (research; https://github.com/jamwithai/arxiv-paper-curator)",
+    }
 
     def __init__(self, settings: ArxivSettings):
         self._settings = settings
@@ -53,6 +56,13 @@ class ArxivClient:
     def search_category(self) -> str:
         return self._settings.search_category
 
+    async def _wait_for_rate_limit(self) -> None:
+        if self._last_request_time is not None:
+            time_since_last = time.time() - self._last_request_time
+            if time_since_last < self.rate_limit_delay:
+                await asyncio.sleep(self.rate_limit_delay - time_since_last)
+        self._last_request_time = time.time()
+
     async def fetch_papers(
         self,
         max_results: Optional[int] = None,
@@ -84,11 +94,9 @@ class ArxivClient:
 
         # Add date filtering if provided
         if from_date or to_date:
-            # Convert dates to arXiv format (YYYYMMDDHHMM) - use 0000 for start of day, 2359 for end
             date_from = f"{from_date}0000" if from_date else "*"
             date_to = f"{to_date}2359" if to_date else "*"
-            # Use correct arXiv API syntax with + symbols
-            search_query += f" AND submittedDate:[{date_from}+TO+{date_to}]"
+            search_query += f" AND submittedDate:[{date_from} TO {date_to}]"
 
         params = {
             "search_query": search_query,
@@ -98,23 +106,12 @@ class ArxivClient:
             "sortOrder": sort_order,
         }
 
-        safe = ":+[]"  # Don't encode :, +, [, ] characters needed for arXiv queries
-        url = f"{self.base_url}?{urlencode(params, quote_via=quote, safe=safe)}"
-
         try:
             logger.info(f"Fetching {max_results} {self.search_category} papers from arXiv")
+            await self._wait_for_rate_limit()
 
-            # Add rate limiting delay between all requests (arXiv recommends 3 seconds)
-            if self._last_request_time is not None:
-                time_since_last = time.time() - self._last_request_time
-                if time_since_last < self.rate_limit_delay:
-                    sleep_time = self.rate_limit_delay - time_since_last
-                    await asyncio.sleep(sleep_time)
-
-            self._last_request_time = time.time()
-
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.get(url)
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=self.REQUEST_HEADERS) as client:
+                response = await client.get(self.base_url, params=params)
                 response.raise_for_status()
                 xml_data = response.text
 
@@ -128,6 +125,14 @@ class ArxivClient:
             raise ArxivAPITimeoutError(f"arXiv API request timed out: {e}")
         except httpx.HTTPStatusError as e:
             logger.error(f"arXiv API HTTP error: {e}")
+            if (from_date or to_date) and e.response.status_code == 406:
+                logger.warning("Date-filtered arXiv query was rejected; falling back to latest papers")
+                return await self.fetch_papers(
+                    max_results=max_results,
+                    start=start,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                )
             raise ArxivAPIException(f"arXiv API returned error {e.response.status_code}: {e}")
         except Exception as e:
             logger.error(f"Failed to fetch papers from arXiv: {e}")
@@ -175,21 +180,11 @@ class ArxivClient:
             "sortOrder": sort_order,
         }
 
-        safe = ":+[]*"  # Don't encode :, +, [, ], *, characters needed for arXiv queries
-        url = f"{self.base_url}?{urlencode(params, quote_via=quote, safe=safe)}"
-
         try:
-            # Add rate limiting delay between all requests (arXiv recommends 3 seconds)
-            if self._last_request_time is not None:
-                time_since_last = time.time() - self._last_request_time
-                if time_since_last < self.rate_limit_delay:
-                    sleep_time = self.rate_limit_delay - time_since_last
-                    await asyncio.sleep(sleep_time)
+            await self._wait_for_rate_limit()
 
-            self._last_request_time = time.time()
-
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.get(url)
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=self.REQUEST_HEADERS) as client:
+                response = await client.get(self.base_url, params=params)
                 response.raise_for_status()
                 xml_data = response.text
 
@@ -222,12 +217,10 @@ class ArxivClient:
         clean_id = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
         params = {"id_list": clean_id, "max_results": 1}
 
-        safe = ":+[]*"  # Don't encode :, +, [, ], *, characters needed for arXiv queries
-        url = f"{self.base_url}?{urlencode(params, quote_via=quote, safe=safe)}"
-
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url)
+            await self._wait_for_rate_limit()
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=self.REQUEST_HEADERS) as client:
+                response = await client.get(self.base_url, params=params)
                 response.raise_for_status()
                 xml_data = response.text
 
@@ -455,7 +448,7 @@ class ArxivClient:
 
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=float(self.timeout_seconds)) as client:
+                async with httpx.AsyncClient(timeout=float(self.timeout_seconds), headers=self.REQUEST_HEADERS) as client:
                     async with client.stream("GET", url) as response:
                         response.raise_for_status()
                         with open(path, "wb") as f:

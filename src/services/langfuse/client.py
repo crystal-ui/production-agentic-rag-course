@@ -196,6 +196,54 @@ class LangfuseTracer:
             except Exception as e:
                 logger.error(f"Error flushing Langfuse: {e}")
 
+    @contextmanager
+    def trace_rag_request(
+        self,
+        query: str,
+        user_id: str,
+        session_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Context manager for a top-level RAG request trace.
+
+        Yields None when Langfuse is disabled so callers can still run.
+        """
+        if not self.client:
+            yield None
+            return
+
+        try:
+            with self.client.start_as_current_span(name="rag_request") as span:
+                span.update(
+                    input={"query": query},
+                    metadata=metadata or {},
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                yield span
+        except Exception as e:
+            logger.warning(f"Failed to start Langfuse RAG trace: {e}")
+            yield None
+
+    def create_span(
+        self,
+        trace=None,
+        name: str = "span",
+        input_data: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Create a child span, or return None when tracing is disabled."""
+        if not self.client or not trace:
+            return None
+
+        try:
+            span = self.client.start_span(name=name)
+            span.update(input=input_data or {}, metadata=metadata or {})
+            return span
+        except Exception as e:
+            logger.warning(f"Failed to create Langfuse span {name}: {e}")
+            return None
+
     def shutdown(self):
         """Shutdown the Langfuse client."""
         if self.client:

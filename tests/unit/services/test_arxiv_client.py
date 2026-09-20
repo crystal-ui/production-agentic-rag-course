@@ -84,9 +84,8 @@ class TestArxivClient:
             papers = await arxiv_client.fetch_papers(max_results=1, from_date="20240101", to_date="20240131")
 
             assert len(papers) == 1
-            # Verify the URL includes date filters
-            call_args = mock_client.return_value.__aenter__.return_value.get.call_args[0][0]
-            assert "submittedDate:[202401010000+TO+202401312359]" in call_args
+            call_kwargs = mock_client.return_value.__aenter__.return_value.get.call_args.kwargs
+            assert "submittedDate:[202401010000 TO 202401312359]" in call_kwargs["params"]["search_query"]
 
     @pytest.mark.asyncio
     async def test_fetch_papers_http_timeout(self, arxiv_client):

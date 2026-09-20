@@ -36,7 +36,7 @@ services:
     image: redis:7-alpine
     container_name: rag-redis
     ports:
-      - "6379:6379"
+      - "6381:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -160,7 +160,7 @@ services:
       - POSTGRES_HOST_AUTH_METHOD=password
       - PGDATA=/var/lib/postgresql/data/pgdata
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -337,7 +337,7 @@ services:
     restart: unless-stopped
     command: --requirepass langfuse_redis_password
     ports:
-      - "6380:6379"
+      - "6382:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "langfuse_redis_password", "ping"]
       interval: 3s
@@ -347,7 +347,7 @@ services:
       - rag-network
 
   langfuse-minio:
-    image: docker.io/minio/minio
+    image: quay.io/minio/minio:latest
     container_name: rag-langfuse-minio
     restart: unless-stopped
     entrypoint: sh
